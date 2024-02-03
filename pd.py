@@ -112,21 +112,18 @@ class Decoder(srd.Decoder):
 
     def reset_variables(self):
         self.state = 'IDLE'
-        self.sof = None
         self.rawbits = [] # All bits, including stuff bits
         self.bits = [] # Only actual VAN frame bits (no stuff bits)
         self.data = []
         self.crc = None
-        self.crc_block = None
+        self.ss_crc_block = None
         self.curbit = 0 # Current bit of VAN frame (bit 0 == SOF)
         self.last_databit = 30 # Positive value that bitnum+x will never match
         self.ack_bit= 9999
         self.ss_block = None
-        self.ss_bit12 = None
-        self.ss_bit32 = None
-        self.ss_databytebits = []
-        self.fd = False
-        self.rtr = None
+        #self.ss_data_strid = None
+        #self.ss_data_block = None
+        self.data_blocks = []
 
     # Poor man's clock synchronization. Use signal edges which change to
     # dominant state in rather simple ways. This naive approach is neither
@@ -161,173 +158,15 @@ class Decoder(srd.Decoder):
     def is_valid_crc(self, crc_bits):
         return True # TODO
 
-    def decode_error_frame(self, bits):
-        pass # TODO
-
-    def decode_overload_frame(self, bits):
-        pass # TODO
-
-
-    
-    # Both standard and extended frames end with CRC, CRC delimiter, ACK,
-    # ACK delimiter, and EOF fields. Handle them in a common function.
-    # Returns True if the frame ended (EOF), False otherwise.
-    def decode_frame_end(self, van_rx, bitnum):
-
-        # Remember start of CRC sequence (see below).
-        if bitnum == (self.last_databit + 1):
-            self.ss_block = self.samplenum
-            if self.fd:
-                if dlc2len(self.dlc) < 16:
-                    self.crc_len = 27 # 17 + SBC + stuff bits
-                else:
-                    self.crc_len = 32 # 21 + SBC + stuff bits
-            else:
-                self.crc_len = 15
-
-        # CRC sequence (15 bits, 17 bits or 21 bits)
-        elif bitnum == (self.last_databit + self.crc_len):
-            if self.fd:
-                if dlc2len(self.dlc) < 16:
-                    crc_type = "CRC-17"
-                else:
-                    crc_type = "CRC-21"
-            else:
-                crc_type = "CRC-15"
-
-            x = self.last_databit + 1
-            crc_bits = self.bits[x:x + self.crc_len + 1]
-            self.crc = int(''.join(str(d) for d in crc_bits), 2)
-            self.putb([11, ['%s sequence: 0x%04x' % (crc_type, self.crc),
-                            '%s: 0x%04x' % (crc_type, self.crc), '%s' % crc_type]])
-            if not self.is_valid_crc(crc_bits):
-                self.putb([16, ['CRC is invalid']])
-
-        # CRC delimiter bit (recessive)
-        elif bitnum == (self.last_databit + self.crc_len + 1):
-            self.putx([12, ['CRC delimiter: %d' % van_rx,
-                            'CRC d: %d' % van_rx, 'CRC d']])
-            if van_rx != 1:
-                self.putx([16, ['CRC delimiter must be a recessive bit']])
-
-            if self.fd:
-                self.set_nominal_bitrate()
-
-        # ACK slot bit (dominant: ACK, recessive: NACK)
-        elif bitnum == (self.last_databit + self.crc_len + 2):
-            ack = 'ACK' if van_rx == 0 else 'NACK'
-            self.putx([13, ['ACK slot: %s' % ack, 'ACK s: %s' % ack, 'ACK s']])
-
-        # ACK delimiter bit (recessive)
-        elif bitnum == (self.last_databit + self.crc_len + 3):
-            self.putx([14, ['ACK delimiter: %d' % van_rx,
-                            'ACK d: %d' % van_rx, 'ACK d']])
-            if van_rx != 1:
-                self.putx([16, ['ACK delimiter must be a recessive bit']])
-
-        # Remember start of EOF (see below).
-        elif bitnum == (self.last_databit + self.crc_len + 4):
-            self.ss_block = self.samplenum
-
-        # End of frame (EOF), 7 recessive bits
-        elif bitnum == (self.last_databit + self.crc_len + 10):
-            self.putb([2, ['End of frame', 'EOF', 'E']])
-            if self.rawbits[-7:] != [1, 1, 1, 1, 1, 1, 1]:
-                self.putb([16, ['End of frame (EOF) must be 7 recessive bits']])
-            self.reset_variables()
-            return True
-
-        return False
-
-    # Returns True if the frame ended (EOF), False otherwise.
-    def decode_standard_frame(self, van_rx, bitnum):
-
-        # Bit 14: FDF (Flexible data format)
-        # Has to be sent dominant when FD frame, has to be sent recessive
-        # when classic VAN frame.
-        if bitnum == 24:
-            self.fd = True if van_rx else False
-            if self.fd:
-                self.putx([7, ['Flexible data format: %d' % van_rx,
-                               'FDF: %d' % van_rx, 'FDF']])
-            else:
-                self.putx([7, ['Reserved bit 0: %d' % van_rx,
-                               'RB0: %d' % van_rx, 'RB0']])
-
-            if self.fd:
-                # Bit 12: Substitute remote request (SRR) bit
-                self.put12([8, ['Substitute remote request', 'SRR']])
-                self.dlc_start = 18
-            else:
-                # Bit 12: Remote transmission request (RTR) bit
-                # Data frame: dominant, remote frame: recessive
-                # Remote frames do not contain a data field.
-                rtr = 'remote' if self.bits[12] == 1 else 'data'
-                self.put12([8, ['Remote transmission request: %s frame' % rtr,
-                                'RTR: %s frame' % rtr, 'RTR']])
-                self.dlc_start = 15
-
-        if bitnum == 25 and self.fd:
-            self.putx([7, ['Reserved: %d' % van_rx, 'R0: %d' % van_rx, 'R0']])
-
-        if bitnum == 26 and self.fd:
-            self.putx([7, ['Bit rate switch: %d' % van_rx, 'BRS: %d' % van_rx, 'BRS']])
-
-        if bitnum == 27 and self.fd:
-            self.putx([7, ['Error state indicator: %d' % van_rx, 'ESI: %d' % van_rx, 'ESI']])
-
-        # Remember start of DLC (see below).
-        elif bitnum == self.dlc_start:
-            self.ss_block = self.samplenum
-
-        # Bits 15-18: Data length code (DLC), in number of bytes (0-8).
-        elif bitnum == self.dlc_start + 3:
-            self.dlc = int(''.join(str(d) for d in self.bits[self.dlc_start:self.dlc_start + 4]), 2)
-            self.putb([10, ['Data length code: %d' % self.dlc,
-                            'DLC: %d' % self.dlc, 'DLC']])
-            self.last_databit = self.dlc_start + 3 + (dlc2len(self.dlc) * 8)
-            if self.dlc > 8 and not self.fd:
-                self.putb([16, ['Data length code (DLC) > 8 is not allowed']])
-
-        # Remember all databyte bits, except the very last one.
-        elif bitnum in range(self.dlc_start + 4, self.last_databit):
-            self.ss_databytebits.append(self.samplenum)
-
-        # Bits 19-X: Data field (0-8 bytes, depending on DLC)
-        # The bits within a data byte are transferred MSB-first.
-        elif bitnum == self.last_databit:
-            self.ss_databytebits.append(self.samplenum) # Last databyte bit.
-            for i in range(dlc2len(self.dlc)):
-                x = self.dlc_start + 4 + (8 * i)
-                b = int(''.join(str(d) for d in self.bits[x:x + 8]), 2)
-                ss = self.ss_databytebits[i * 8]
-                es = self.ss_databytebits[((i + 1) * 8) - 1]
-                self.putg(ss, es, [0, ['Data byte %d: 0x%02x' % (i, b),
-                                       'DB %d: 0x%02x' % (i, b), 'DB']])
-            self.ss_databytebits = []
-
-        elif bitnum > self.last_databit:
-            return self.decode_frame_end(van_rx, bitnum)
-
-        return False
-
-
     def handle_bit(self, van_rx):
         self.rawbits.append(van_rx)
-
-
-        # Get the index of the current VAN frame bit (without stuff bits).
         bitnum = len(self.rawbits) - 1
 
-        # If this is a stuff bit, remove it from self.bits and ignore it.
         if self.is_stuff_bit():
             self.putx([15, [str(van_rx)]])
         else:
             self.putx([17, [str(van_rx)]])
             self.bits.append(van_rx)
-
-
-        # Bit 0: Start of frame (SOF) bit
 
         if bitnum == 0:
             self.ss_block = self.samplenum
@@ -343,15 +182,11 @@ class Decoder(srd.Decoder):
         elif bitnum == 10:
             self.ss_block = self.samplenum
 
-        # Bits 1-11: Identifier (ID[10..0])
-        # The bits ID[10..4] must NOT be all recessive.
         elif bitnum == 24:
             self.id = int(''.join(str(d) for d in self.bits[0:]), 2)
-            s = '%d (0x%x)' % (self.id, self.id),
+            s = '%d (0x%X)' % (self.id, self.id),
             self.putb([3, ['Identifier: %s' % s, 'ID: %s' % s, 'ID']])
             self.bits.clear()
-            if (self.id & 0x7f0) == 0x7f0:
-                self.putb([16, ['Identifier bits 10..4 must not be all recessive']])
 
         elif bitnum == 25:
             self.putx([4, ['EXT']])
@@ -364,26 +199,36 @@ class Decoder(srd.Decoder):
 
         elif bitnum == 28:
             self.putx([7, ['RTR']])
-      
+        
+        
         elif bitnum == self.last_databit:
             self.ss_block = self.samplenum
-
+            
         elif bitnum == self.last_databit + 9:
-            i = len(self.data)
+            
+            self.data_blocks.append((self.ss_block, self.samplenum))
             byte = int(''.join(str(d) for d in self.bits), 2)
             self.bits.clear()
             raw = int(''.join(str(d) for d in self.rawbits[-5:]), 2)
             if (raw & 0x03) > 0:
-                self.crc_block = self.ss_block
-                self.putb([0, ['Data[%d]=0x%02x' % (i,byte), 'D[%d]=0x%02x' % (i,byte), 'DB']])
+                self.ss_crc_block = self.ss_block
+                #self.putb([0, ['Data[%d]=0x%02X' % (i,byte), 'D[%d]=0x%02x' % (i,byte), 'D']])
                 self.last_databit += 10
                 self.data.append(byte)
             else: # 遇到EOD
                 b = self.data.pop()
                 crc = (b << 7) + (byte >> 1 )
                 self.crc = crc
-                self.ss_block = self.crc_block
-                self.putb_pre([8, ['CRC=0x%04x' % crc, 'C=0x%04x' % crc, 'C']])
+                self.ss_block = self.ss_crc_block
+                for i in range(len(self.data)):
+                    byte = self.data[i]
+                    (ss,es) = self.data_blocks[i]
+                    self.putg(ss, es, [0, ['Data[%d]=0x%02X' % (i,byte), 'D[%d]=0x%02x' % (i,byte), 'D']])
+                    ss = es
+
+                ss = self.ss_crc_block
+                es = self.samplenum - int(self.bit_width)
+                self.putg(ss, es, [8, ['CRC=0x%04X' % crc, 'C=0x%04x' % crc, 'C']])
                 self.putx([9, ['EOD']])
                 self.ack_bit = self.last_databit + 10
             
@@ -393,13 +238,8 @@ class Decoder(srd.Decoder):
             self.putb([10, ['ACK']])
         elif bitnum == self.ack_bit + 2:
             self.putx([2, ['EOF']])
-        # Bits 14-X: Frame-type dependent, passed to the resp. handlers.
-
-
-
-
-        # After a frame there are 3 intermission bits (recessive).
-        # After these bits, the bus is considered free.
+            self.reset_variables()
+            return True
 
         self.curbit += 1
 
@@ -412,7 +252,7 @@ class Decoder(srd.Decoder):
             if self.state == 'IDLE':
                 # Wait for a dominant state (logic 0) on the bus.
                 (van_rx,) = self.wait({0: 'l'})
-                self.sof = self.samplenum
+                #self.sof = self.samplenum
                 self.dom_edge_seen(force = True)
                 self.state = 'GET BITS'
             elif self.state == 'GET BITS':
