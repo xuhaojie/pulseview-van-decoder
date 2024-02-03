@@ -55,19 +55,15 @@ class Decoder(srd.Decoder):
         ('crc', 'CRC'),
         ('eod', 'End of datat'),
         ('ack', 'ACK'),
-        ('crc-sequence', 'CRC sequence'),
-        ('crc-delimiter', 'CRC delimiter'),
-        ('ack-slot', 'ACK slot'),
-        ('ack-delimiter', 'ACK delimiter'),
         ('stuff-bit', 'Stuff bit'),
         ('warnings', 'Human-readable warnings'),
         ('bit', 'Bit'),
     )
 
     annotation_rows = (
-        ('bits', 'Bits', (15, 17)),
-        ('fields', 'Fields', tuple(range(15))),
-        ('warnings', 'Warnings', (16,)),
+        ('bits', 'Bits', (11, 13)),
+        ('fields', 'Fields', tuple(range(11))),
+        ('warnings', 'Warnings', (12,)),
     )
 
     def __init__(self):
@@ -163,9 +159,9 @@ class Decoder(srd.Decoder):
         bitnum = len(self.rawbits) - 1
 
         if self.is_stuff_bit():
-            self.putx([15, [str(van_rx)]])
+            self.putx([11, [str(van_rx)]])
         else:
-            self.putx([17, [str(van_rx)]])
+            self.putx([13, [str(van_rx)]])
             self.bits.append(van_rx)
 
         if bitnum == 0:
@@ -177,7 +173,7 @@ class Decoder(srd.Decoder):
             self.bits.clear()
             if sof != 0x3D:            
                 s = "Error! SOF = 0x%X, should be 0x3D" % sof
-                self.putb([16, [s]])
+                self.putb([12, [s]])
 
         elif bitnum == 10:
             self.ss_block = self.samplenum
@@ -199,6 +195,7 @@ class Decoder(srd.Decoder):
 
         elif bitnum == 28:
             self.putx([7, ['RTR']])
+            self.bits.clear()
         
         
         elif bitnum == self.last_databit:
@@ -207,7 +204,7 @@ class Decoder(srd.Decoder):
         elif bitnum == self.last_databit + 9:
             
             self.data_blocks.append((self.ss_block, self.samplenum))
-            byte = int(''.join(str(d) for d in self.bits), 2)
+            byte = int(''.join(str(d) for d in self.bits), 2) # & 0xFF
             self.bits.clear()
             raw = int(''.join(str(d) for d in self.rawbits[-8:]), 2)
             if (raw & 0x03) > 0:
