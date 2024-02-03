@@ -23,9 +23,6 @@ import sigrokdecode as srd
 class SamplerateError(Exception):
     pass
 
-def dlc2len(dlc):
-    return [0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 16, 20, 24, 32, 48, 64][dlc]
-
 class Decoder(srd.Decoder):
     api_version = 3
     id = 'van'
@@ -44,26 +41,26 @@ class Decoder(srd.Decoder):
         {'id': 'sample_point', 'desc': 'Sample point (%)', 'default': 70.0},
     )
     annotations = (
-        ('data', 'VAN payload data'),
-        ('sof', 'Start of frame'),
-        ('eof', 'End of frame'),
-        ('id', 'Identifier'),
-        ('ext', 'Ext'),
-        ('rak', 'RAK'),
-        ('rw', 'R/W'),
-        ('rtr', 'RTR'),
-        ('crc', 'CRC'),
-        ('eod', 'End of datat'),
-        ('ack', 'ACK'),
-        ('stuff-bit', 'Stuff bit'),
-        ('warnings', 'Human-readable warnings'),
-        ('bit', 'Bit'),
+        ('sof', 'Start of frame'), # 0
+        ('id', 'Identifier'), # 1
+        ('ext', 'Ext'), # 2
+        ('rak', 'RAK'), # 3 
+        ('rw', 'R/W'), # 4
+        ('rtr', 'RTR'), # 5
+        ('data', 'VAN payload data'),  # 6
+        ('crc', 'CRC'), # 7
+        ('eod', 'End of datat'), # 8
+        ('ack', 'ACK'), # 9
+        ('eof', 'End of frame'), # 10
+        ('bit', 'Bit'), # 11
+        ('stuff-bit', 'Stuff bit'), # 12
+        ('warnings', 'Human-readable warnings'), # 13
     )
 
     annotation_rows = (
-        ('bits', 'Bits', (11, 13)),
+        ('bits', 'Bits', (11, 12)),
         ('fields', 'Fields', tuple(range(11))),
-        ('warnings', 'Warnings', (12,)),
+        ('warnings', 'Warnings', (13,)),
     )
 
     def __init__(self):
@@ -117,8 +114,6 @@ class Decoder(srd.Decoder):
         self.last_databit = 30 # Positive value that bitnum+x will never match
         self.ack_bit= 9999
         self.ss_block = None
-        #self.ss_data_strid = None
-        #self.ss_data_block = None
         self.data_blocks = []
 
     # Poor man's clock synchronization. Use signal edges which change to
@@ -151,24 +146,21 @@ class Decoder(srd.Decoder):
         
         return False
 
-    def is_valid_crc(self, crc_bits):
-        return True # TODO
-
     def handle_bit(self, van_rx):
         self.rawbits.append(van_rx)
         bitnum = len(self.rawbits) - 1
 
         if self.is_stuff_bit():
-            self.putx([11, [str(van_rx)]])
+            self.putx([12, [str(van_rx)]])
         else:
-            self.putx([13, [str(van_rx)]])
+            self.putx([11, [str(van_rx)]])
             self.bits.append(van_rx)
 
         if bitnum == 0:
             self.ss_block = self.samplenum
               
         elif bitnum == 9:
-            self.putb([1, ['Start of frame', 'SOF', 'S']])
+            self.putb([0, ['Start of frame', 'SOF', 'S']])
             sof = int(''.join(str(d) for d in self.bits[0:10]), 2)
             self.bits.clear()
             if sof != 0x3D:            
@@ -181,38 +173,42 @@ class Decoder(srd.Decoder):
         elif bitnum == 24:
             self.id = int(''.join(str(d) for d in self.bits[0:]), 2)
             s = '%d (0x%X)' % (self.id, self.id),
-            self.putb([3, ['Identifier: %s' % s, 'ID: %s' % s, 'ID']])
+            self.putb([1, ['Identifier: %s' % s, 'ID: %s' % s, 'ID']])
             self.bits.clear()
 
         elif bitnum == 25:
-            self.putx([4, ['EXT']])
+            self.putx([2, ['EXT']])
 
         elif bitnum == 26:
-            self.putx([5, ['RAK']])
+            self.putx([3, ['RAK']])
 
         elif bitnum == 27:
-            self.putx([6, ['R/W']])
+            self.putx([4, ['R/W']])
 
         elif bitnum == 28:
-            self.putx([7, ['RTR']])
+            self.putx([5, ['RTR']])
             self.bits.clear()
-        
         
         elif bitnum == self.last_databit:
             self.ss_block = self.samplenum
             
         elif bitnum == self.last_databit + 9:
             
+            # Recodrd data position
             self.data_blocks.append((self.ss_block, self.samplenum))
+            
             byte = int(''.join(str(d) for d in self.bits), 2) # & 0xFF
             self.bits.clear()
+
             raw = int(''.join(str(d) for d in self.rawbits[-8:]), 2)
+
             if (raw & 0x03) > 0:
                 self.ss_crc_block = self.ss_block
-                #self.putb([0, ['Data[%d]=0x%02X' % (i,byte), 'D[%d]=0x%02x' % (i,byte), 'D']])
                 self.last_databit += 10
                 self.data.append(byte)
-            else: # 遇到EOD
+            else: # meet EOD
+                
+                # Mark Data
                 b = self.data.pop()
                 crc = (b << 7) + (byte >> 1 )
                 self.crc = crc
@@ -220,25 +216,26 @@ class Decoder(srd.Decoder):
                 for i in range(len(self.data)):
                     byte = self.data[i]
                     (ss,es) = self.data_blocks[i]
-                    self.putg(ss, es, [0, ['Data[%d]=0x%02X' % (i,byte), 'D[%d]=0x%02x' % (i,byte), 'D']])
+                    self.putg(ss, es, [6, ['Data[%d]=0x%02X' % (i,byte), 'D[%d]=0x%02x' % (i,byte), 'D']])
                     ss = es
 
+                # Mark CRC
                 ss = self.ss_crc_block
                 es = self.samplenum - 2*int(self.bit_width)
-                self.putg(ss, es, [8, ['CRC=0x%04X' % crc, 'C=0x%04x' % crc, 'C']])
+                self.putg(ss, es, [7, ['CRC=0x%04X' % crc, 'C=0x%04x' % crc, 'C']])
                 
-                
+                # Mark EOD
                 ss = self.samplenum - int(self.bit_width)
                 es = self.samplenum
-                self.putg(ss,es,[9, ['EOD']])
+                self.putg(ss,es,[8, ['EOD']])
                 self.ack_bit = self.last_databit + 10
             
         elif bitnum == self.ack_bit:
             self.ss_block = self.samplenum
         elif bitnum == self.ack_bit + 1:
-            self.putb([10, ['ACK']])
+            self.putb([9, ['ACK']])
         elif bitnum == self.ack_bit + 2:
-            self.putx([2, ['EOF']])
+            self.putx([10, ['EOF']])
             self.reset_variables()
             return True
 
@@ -255,8 +252,8 @@ class Decoder(srd.Decoder):
                 (van_rx,) = self.wait({0: 'l'})
                 #self.sof = self.samplenum
                 self.dom_edge_seen(force = True)
-                self.state = 'GET BITS'
-            elif self.state == 'GET BITS':
+                self.state = 'GET_BITS'
+            elif self.state == 'GET_BITS':
                 # Wait until we're in the correct bit/sampling position.
                 pos = self.get_sample_point(self.curbit)
                 (van_rx,) = self.wait([{'skip': pos - self.samplenum}, {0: 'f'}])
