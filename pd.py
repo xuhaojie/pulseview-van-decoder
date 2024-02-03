@@ -52,8 +52,8 @@ class Decoder(srd.Decoder):
         ('rak', 'RAK'),
         ('rw', 'R/W'),
         ('rtr', 'RTR'),
-        ('rtr0', 'Remote transmission request'),
-        ('srr', 'Substitute remote request'),
+        ('crc', 'CRC'),
+        ('eod', 'End of datat'),
         ('dlc', 'Data length count'),
         ('crc-sequence', 'CRC sequence'),
         ('crc-delimiter', 'CRC delimiter'),
@@ -101,27 +101,23 @@ class Decoder(srd.Decoder):
     # Single-VAN-bit annotation using the current samplenum.
     def putx(self, data):
         self.putg(self.samplenum, self.samplenum, data)
-
-    # Single-VAN-bit annotation using the samplenum of VAN bit 12.
-    def put12(self, data):
-        self.putg(self.ss_bit12, self.ss_bit12, data)
-
-    # Single-VAN-bit annotation using the samplenum of VAN bit 32.
-    def put32(self, data):
-        self.putg(self.ss_bit32, self.ss_bit32, data)
-
+    
     # Multi-VAN-bit annotation from self.ss_block to current samplenum.
     def putb(self, data):
         self.putg(self.ss_block, self.samplenum, data)
 
+    # Multi-VAN-bit annotation from self.ss_block to current samplenum.
+    def putb_pre(self, data):
+        self.putg(self.ss_block, self.samplenum - int(self.bit_width), data)
+
     def reset_variables(self):
-        self.decode_state = "VAN_SOF1"
-        self.bit_count = 0
         self.state = 'IDLE'
         self.sof = None
         self.rawbits = [] # All bits, including stuff bits
         self.bits = [] # Only actual VAN frame bits (no stuff bits)
-        self.data_count = 0
+        self.data = []
+        self.crc = None
+        self.crc_block = None
         self.curbit = 0 # Current bit of VAN frame (bit 0 == SOF)
         self.last_databit = 30 # Positive value that bitnum+x will never match
         self.ss_block = None
@@ -170,6 +166,8 @@ class Decoder(srd.Decoder):
     def decode_overload_frame(self, bits):
         pass # TODO
 
+
+    
     # Both standard and extended frames end with CRC, CRC delimiter, ACK,
     # ACK delimiter, and EOF fields. Handle them in a common function.
     # Returns True if the frame ended (EOF), False otherwise.
@@ -312,6 +310,7 @@ class Decoder(srd.Decoder):
 
         return False
 
+
     def handle_bit(self, van_rx):
         self.rawbits.append(van_rx)
 
@@ -369,11 +368,23 @@ class Decoder(srd.Decoder):
             self.ss_block = self.samplenum
 
         elif bitnum == self.last_databit + 9:
-            i = self.data_count
-            b = int(''.join(str(d) for d in self.bits), 2)
-            self.putb([0, ['Data[%d]=0x%02x' % (i,b), 'D[%d]=0x%02x' % (i,b), 'DB']])
-            self.data_count += 1
-            self.last_databit += 10
+            i = len(self.data)
+            byte = int(''.join(str(d) for d in self.bits), 2)
+            raw = int(''.join(str(d) for d in self.rawbits[-5:]), 2)
+            if (raw & 0x03) > 0:
+                self.crc_block = self.ss_block
+                self.putb([0, ['Data[%d]=0x%02x' % (i,byte), 'D[%d]=0x%02x' % (i,byte), 'DB']])
+                self.last_databit += 10
+                self.data.append(byte)
+            else: # 遇到EOD
+                b = self.data.pop()
+                crc = (b << 7) + (byte >> 1 )
+                self.crc = crc
+                self.ss_block = self.crc_block
+                self.putb_pre([8, ['CRC=0x%04x' % crc, 'C=0x%04x' % crc, 'C']])
+                self.putx([9, ['EOD']])
+                
+                pass
             self.bits.clear()
 
 
