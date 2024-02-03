@@ -48,11 +48,11 @@ class Decoder(srd.Decoder):
         ('sof', 'Start of frame'),
         ('eof', 'End of frame'),
         ('id', 'Identifier'),
-        ('ext-id', 'Extended identifier'),
-        ('full-id', 'Full identifier'),
-        ('ide', 'Identifier extension bit'),
-        ('reserved-bit', 'Reserved bit 0 and 1'),
-        ('rtr', 'Remote transmission request'),
+        ('ext', 'Ext'),
+        ('rak', 'RAK'),
+        ('rw', 'R/W'),
+        ('rtr', 'RTR'),
+        ('rtr0', 'Remote transmission request'),
         ('srr', 'Substitute remote request'),
         ('dlc', 'Data length count'),
         ('crc-sequence', 'CRC sequence'),
@@ -351,21 +351,24 @@ class Decoder(srd.Decoder):
             self.id = int(''.join(str(d) for d in self.bits[0:]), 2)
             s = '%d (0x%x)' % (self.id, self.id),
             self.putb([3, ['Identifier: %s' % s, 'ID: %s' % s, 'ID']])
+            self.bits.clear()
             if (self.id & 0x7f0) == 0x7f0:
                 self.putb([16, ['Identifier bits 10..4 must not be all recessive']])
 
-        # RTR or SRR bit, depending on frame type (gets handled later).
-        elif bitnum == 22:
-            # self.putx([0, ['RTR/SRR: %d' % van_rx]]) # Debug only.
-            self.ss_bit12 = self.samplenum
+        elif bitnum == 25:
+            self.putx([4, ['EXT']])
 
-        # Bit 13: Identifier extension (IDE) bit
-        # Standard frame: dominant, extended frame: recessive
-        elif bitnum == 23:
-            pass
+        elif bitnum == 26:
+            self.putx([5, ['RAK']])
 
+        elif bitnum == 27:
+            self.putx([6, ['R/W']])
+
+        elif bitnum == 28:
+            self.putx([7, ['RTR']])
+      
         # Bits 14-X: Frame-type dependent, passed to the resp. handlers.
-        elif bitnum >= 24:
+        elif bitnum >= 29:
             done = self.decode_standard_frame(van_rx, bitnum)
 
             # The handlers return True if a frame ended (EOF).
