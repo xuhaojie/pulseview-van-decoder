@@ -209,7 +209,7 @@ class Decoder(srd.Decoder):
             self.data_blocks.append((self.ss_block, self.samplenum))
             byte = int(''.join(str(d) for d in self.bits), 2)
             self.bits.clear()
-            raw = int(''.join(str(d) for d in self.rawbits[-5:]), 2)
+            raw = int(''.join(str(d) for d in self.rawbits[-8:]), 2)
             if (raw & 0x03) > 0:
                 self.ss_crc_block = self.ss_block
                 #self.putb([0, ['Data[%d]=0x%02X' % (i,byte), 'D[%d]=0x%02x' % (i,byte), 'D']])
@@ -227,9 +227,13 @@ class Decoder(srd.Decoder):
                     ss = es
 
                 ss = self.ss_crc_block
-                es = self.samplenum - int(self.bit_width)
+                es = self.samplenum - 2*int(self.bit_width)
                 self.putg(ss, es, [8, ['CRC=0x%04X' % crc, 'C=0x%04x' % crc, 'C']])
-                self.putx([9, ['EOD']])
+                
+                
+                ss = self.samplenum - int(self.bit_width)
+                es = self.samplenum
+                self.putg(ss,es,[9, ['EOD']])
                 self.ack_bit = self.last_databit + 10
             
         elif bitnum == self.ack_bit:
