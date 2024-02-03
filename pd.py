@@ -118,11 +118,12 @@ class Decoder(srd.Decoder):
         self.decode_state = "VAN_SOF1"
         self.bit_count = 0
         self.state = 'IDLE'
-        self.sof = self.dlc = None
+        self.sof = None
         self.rawbits = [] # All bits, including stuff bits
         self.bits = [] # Only actual VAN frame bits (no stuff bits)
+        self.data_count = 0
         self.curbit = 0 # Current bit of VAN frame (bit 0 == SOF)
-        self.last_databit = 999 # Positive value that bitnum+x will never match
+        self.last_databit = 30 # Positive value that bitnum+x will never match
         self.ss_block = None
         self.ss_bit12 = None
         self.ss_bit32 = None
@@ -330,8 +331,7 @@ class Decoder(srd.Decoder):
 
         if bitnum == 0:
             self.ss_block = self.samplenum
-
-                
+              
         elif bitnum == 9:
             self.putb([1, ['Start of frame', 'SOF', 'S']])
             sof = int(''.join(str(d) for d in self.bits[0:10]), 2)
@@ -340,8 +340,6 @@ class Decoder(srd.Decoder):
                 s = "Error! SOF = 0x%X, should be 0x3D" % sof
                 self.putb([16, [s]])
 
-
-        # Remember start of ID (see below).
         elif bitnum == 10:
             self.ss_block = self.samplenum
 
@@ -367,13 +365,22 @@ class Decoder(srd.Decoder):
         elif bitnum == 28:
             self.putx([7, ['RTR']])
       
-        # Bits 14-X: Frame-type dependent, passed to the resp. handlers.
-        elif bitnum >= 29:
-            done = self.decode_standard_frame(van_rx, bitnum)
+        elif bitnum == self.last_databit:
+            self.ss_block = self.samplenum
 
-            # The handlers return True if a frame ended (EOF).
-            if done:
-                return
+        elif bitnum == self.last_databit + 9:
+            i = self.data_count
+            b = int(''.join(str(d) for d in self.bits), 2)
+            self.putb([0, ['Data[%d]=0x%02x' % (i,b), 'D[%d]=0x%02x' % (i,b), 'DB']])
+            self.data_count += 1
+            self.last_databit += 10
+            self.bits.clear()
+
+
+        # Bits 14-X: Frame-type dependent, passed to the resp. handlers.
+
+
+
 
         # After a frame there are 3 intermission bits (recessive).
         # After these bits, the bus is considered free.
