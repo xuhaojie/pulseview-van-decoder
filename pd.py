@@ -54,7 +54,7 @@ class Decoder(srd.Decoder):
         ('rtr', 'RTR'),
         ('crc', 'CRC'),
         ('eod', 'End of datat'),
-        ('dlc', 'Data length count'),
+        ('ack', 'ACK'),
         ('crc-sequence', 'CRC sequence'),
         ('crc-delimiter', 'CRC delimiter'),
         ('ack-slot', 'ACK slot'),
@@ -120,6 +120,7 @@ class Decoder(srd.Decoder):
         self.crc_block = None
         self.curbit = 0 # Current bit of VAN frame (bit 0 == SOF)
         self.last_databit = 30 # Positive value that bitnum+x will never match
+        self.ack_bit= 9999
         self.ss_block = None
         self.ss_bit12 = None
         self.ss_bit32 = None
@@ -370,6 +371,7 @@ class Decoder(srd.Decoder):
         elif bitnum == self.last_databit + 9:
             i = len(self.data)
             byte = int(''.join(str(d) for d in self.bits), 2)
+            self.bits.clear()
             raw = int(''.join(str(d) for d in self.rawbits[-5:]), 2)
             if (raw & 0x03) > 0:
                 self.crc_block = self.ss_block
@@ -383,11 +385,14 @@ class Decoder(srd.Decoder):
                 self.ss_block = self.crc_block
                 self.putb_pre([8, ['CRC=0x%04x' % crc, 'C=0x%04x' % crc, 'C']])
                 self.putx([9, ['EOD']])
-                
-                pass
-            self.bits.clear()
-
-
+                self.ack_bit = self.last_databit + 10
+            
+        elif bitnum == self.ack_bit:
+            self.ss_block = self.samplenum
+        elif bitnum == self.ack_bit + 1:
+            self.putb([10, ['ACK']])
+        elif bitnum == self.ack_bit + 2:
+            self.putx([2, ['EOF']])
         # Bits 14-X: Frame-type dependent, passed to the resp. handlers.
 
 
