@@ -43,7 +43,7 @@ class Decoder(srd.Decoder):
 	annotations = (
 		('sof', 'Start of frame'), # 0
 		('id', 'Identifier'), # 1
-		('ext', 'Ext'), # 2
+		('com', 'COM'), # 2
 		('rak', 'RAK'), # 3 
 		('rw', 'R/W'), # 4
 		('rtr', 'RTR'), # 5
@@ -52,17 +52,25 @@ class Decoder(srd.Decoder):
 		('eod', 'End of datat'), # 8
 		('ack', 'ACK'), # 9
 		('eof', 'End of frame'), # 10
-		('bit', 'Bit'), # 11
+		('data-bit', 'Data Bit'), # 11
 		('stuff-bit', 'Stuff bit'), # 12
-		('ack-bit', 'Ack bit'), # 13
-		('eof-bit', 'EOF bit'), # 14
-		('warnings', 'Human-readable warnings'), # 15
+		('sof-bit', 'SOF bit'), # 13
+		('id-bit', 'ID bit'), # 14
+		('ext-bit', 'EXT bit'), # 15
+		('rak-bit', 'RAK bit'), # 16
+		('rw-bit', 'R/W bit'), # 17
+		('rtr-bit', 'RTR bit'), # 18
+		('eod-bit', 'EOD bit'), # 19		
+		('ack-delimiter-bit', 'ACK delimiter bit'), # 20
+		('ack-bit', 'Ack bit'), # 21
+		('eof-bit', 'EOF bit'), # 22
+		('warnings', 'Human-readable warnings'), # 23
 	)
 
 	annotation_rows = (
-		('bits', 'Bits', (11, 12, 13,14)),
+		('bits', 'Bits', (11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22)),
 		('fields', 'Fields', tuple(range(11))),
-		('warnings', 'Warnings', (15,)),
+		('warnings', 'Warnings', (23,)),
 	)
 
 	def __init__(self):
@@ -152,8 +160,7 @@ class Decoder(srd.Decoder):
 				self.putg(begin, end, [0, ['Start of frame', 'SOF', 'S']])	
 				if byte != 0x0E:            
 					s = "Error! SOF = 0x%X, should be 0x0E" % byte
-					self.putg(begin, end,[15, [s]])
-					
+					self.putg(begin, end,[23, [s]])
 			elif i == 4:
 				id = int(''.join(str(d) for d in self.bits[8:20]), 2)
 				s = '%d (0x%X)' % (id, id)
@@ -161,17 +168,11 @@ class Decoder(srd.Decoder):
 				(_,end,_) = self.bit_groups[4]
 				self.putg(begin, end, [1,  ['Identifier: %s' % s, 'ID: %s' % s, 'ID']])	
 			elif i == 5:
-				begin=ss
-				self.putg(begin,begin,[2, ['EXT']])
-
-				begin +=  int(self.bit_width)
-				self.putg(begin,begin,[3, ['RAK']])
-
-				begin +=  int(self.bit_width)
-				self.putg(begin,begin,[4, ['R/W']])
-
-				begin +=  int (self.bit_width)
-				self.putg(begin,begin,[5, ['RTR']])
+				(ss,end,_) = self.bit_groups[5]
+				begin = ss
+				end = es
+				com = int(''.join(str(d) for d in bits), 2)
+				self.putg(begin,end,[5, ['COM: %d(0x%02X)' % (com,com), 'COM:0x%02X' % com, 'COM']])
 
 			elif i >= 7 and i < (groups - 4) and i %2 == 1:
 				index = int((i - 7 ) / 2)
@@ -181,7 +182,7 @@ class Decoder(srd.Decoder):
 				(begin,_,_) = self.bit_groups[-4]
 				(_,end,_) = self.bit_groups[-1]
 				end -= 2*int(self.bit_width)
-				crc = int(''.join(str(d) for d in self.bits[-16:-1]), 2)
+				crc = int(''.join(str(d) for d in self.bits[-23:-1]), 2)
 				self.putg(begin, end, [7, ['CRC=0x%04X' % crc, 'C=0x%04x' % crc, 'C']])
 
 			elif i == groups - 1:
@@ -194,54 +195,64 @@ class Decoder(srd.Decoder):
 
 	def handle_bit(self, van_rx):
 		self.rawbits.append(van_rx)
-
 		bitnum = len(self.rawbits) -1
-		
-
-
 		if self.done:
-					
-			groups = len(self.bit_groups) 
-			if bitnum == groups * 5:
-				self.putx([11, [str(van_rx)]])
+
+			tail_bits = len(self.bit_groups) *5 
+			if bitnum == tail_bits:
+				self.putx([20, ['ACK delimiter', 'Delimiter', str(van_rx)]])
 				if van_rx != 1:
-					self.putx([15, ['ACK delimitermust be a recessive bit']])
-			elif bitnum == groups*5 + 1:
-				self.putx([13, [str(van_rx)]])
+					self.putx([23, ['ACK delimiter must be a recessive bit']])
+			elif bitnum == tail_bits + 1:
+				self.putx([21, ['ACK slot:' + str(van_rx), 'ACK:'+str(van_rx), str(van_rx)]])
 				(_,es,_) = self.bit_groups[-1]
 				begin = es + int(self.bit_width)
 				end = begin + int(self.bit_width)
 				self.putg(begin,end,[9, ['ACK']])
-			elif bitnum == groups*5 + 2:
-				self.putx([14, [str(van_rx)]])
+			elif bitnum == tail_bits + 2:
+				self.putx([22, [str(van_rx)]])
 				self.ss_block = self.samplenum
-			elif bitnum == groups*5 + 3:
-				self.putx([14, [str(van_rx)]])
-			elif bitnum == groups*5 + 4:
-				self.putx([14, [str(van_rx)]])
+			elif bitnum == tail_bits + 3:
+				self.putx([22, [str(van_rx)]])
+			elif bitnum == tail_bits + 4:
+				self.putx([22, [str(van_rx)]])
 				self.putg(self.ss_block, self.samplenum,[10, ['EOF']])
 				if van_rx != 1:
-					self.putg(self.ss_block, self.samplenum,[15, ['End of frame (EOF) must be a recessive bit']])						
+					self.putg(self.ss_block, self.samplenum,[23, ['End of frame (EOF) must be a recessive bit']])						
 				self.reset_variables()
 				return True			
 		else:
 			stuff_bit = bitnum % 5 == 4
-
 			if stuff_bit:
-				self.putx([12, [str(van_rx)]])
-			else:
-				self.putx([11, [str(van_rx)]])
-				self.bits.append(van_rx
-					 )			
-			if bitnum % 5 == 0:
-				self.ss_block = self.samplenum
-			elif stuff_bit:
 				bits = self.bits[-4:]
 				self.bit_groups.append((self.ss_block, self.samplenum, bits))
 				raw = int(''.join(str(d) for d in self.rawbits[-5:]), 2)
 				if raw & 3 == 0:
+					self.putx([19, ['EOD bit: ' + str(van_rx), 'EOD:'+str(van_rx),str(van_rx)]])
 					self.decode_frame()
-
+				else:
+					if van_rx:
+						self.putx([12, ['Stuff: 1','S(1)','1']])
+					else:
+						self.putx([12, ['Stuff: 0','S(0)','0']])
+			else:
+				if bitnum < 10:
+					self.putx([13, [str(van_rx)]])
+				elif bitnum < 25:
+					self.putx([14, [str(van_rx)]])
+				elif bitnum == 25:
+					self.putx([15, ['EXT: '+str(van_rx),'EXT'+str(van_rx),str(van_rx)]])
+				elif bitnum == 26:
+					self.putx([16, ['RAK: '+str(van_rx),'RAK'+str(van_rx),str(van_rx)]])
+				elif bitnum == 27:
+					self.putx([17, ['R/W: '+str(van_rx),'RW'+str(van_rx),str(van_rx)]])
+				elif bitnum == 28:
+					self.putx([18, ['RTR: '+str(van_rx),'RTR'+str(van_rx),str(van_rx)]])
+				elif bitnum >= 29:
+					self.putx([11, [str(van_rx)]])
+				self.bits.append(van_rx)			
+				if bitnum % 5 == 0:
+					self.ss_block = self.samplenum
 		self.curbit += 1
 
 	def decode(self):
