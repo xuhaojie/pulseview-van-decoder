@@ -161,7 +161,7 @@ class Decoder(srd.Decoder):
 			self.bits.clear()
 			if sof != 0x3D:            
 				s = "Error! SOF = 0x%X, should be 0x3D" % sof
-				self.putb([12, [s]])
+				self.putb([13, [s]])
 
 		elif bitnum == 10:
 			self.ss_block = self.samplenum
