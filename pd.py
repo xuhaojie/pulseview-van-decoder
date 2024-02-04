@@ -54,13 +54,15 @@ class Decoder(srd.Decoder):
 		('eof', 'End of frame'), # 10
 		('bit', 'Bit'), # 11
 		('stuff-bit', 'Stuff bit'), # 12
-		('warnings', 'Human-readable warnings'), # 13
+		('ack-bit', 'Ack bit'), # 13
+		('eof-bit', 'EOF bit'), # 14
+		('warnings', 'Human-readable warnings'), # 15
 	)
 
 	annotation_rows = (
-		('bits', 'Bits', (11, 12)),
+		('bits', 'Bits', (11, 12, 13,14)),
 		('fields', 'Fields', tuple(range(11))),
-		('warnings', 'Warnings', (13,)),
+		('warnings', 'Warnings', (15,)),
 	)
 
 	def __init__(self):
@@ -103,14 +105,11 @@ class Decoder(srd.Decoder):
 		self.state = 'IDLE'
 		self.rawbits = [] # All bits, including stuff bits
 		self.bits = [] # Only actual VAN frame bits (no stuff bits)
-		self.data = []
-		self.crc = None
-		self.ss_crc_block = None
+		self.bit_groups = []
 		self.curbit = 0 # Current bit of VAN frame (bit 0 == SOF)
-		self.last_databit = 30 # Positive value that bitnum+x will never match
-		self.ack_bit= 9999
 		self.ss_block = None
 		self.data_blocks = []
+		self.done = False
 
 	# Poor man's clock synchronization. Use signal edges which change to
 	# dominant state in rather simple ways. This naive approach is neither
@@ -131,118 +130,117 @@ class Decoder(srd.Decoder):
 		samplenum += self.bit_width * (bitnum - self.dom_edge_bcount)
 		samplenum += self.sample_point
 		return int(samplenum)
+		
+	def decode_frame(self):
+		count = 0
+		begin = 0
+		end = 0
+		byte = 0
+		groups = len(self.bit_groups)
+		for i in range(groups):
+			(ss,es,bits) = self.bit_groups[i]
+			if count == 0:
+				begin = ss
+				byte =  int(''.join(str(d) for d in bits), 2)
+				count = 1
+			elif count == 1:
+				count = 0
+				byte <<= 4
+				byte +=  int(''.join(str(d) for d in bits), 2)
+				end = es
+			if i == 1:
+				self.putg(begin, end, [0, ['Start of frame', 'SOF', 'S']])	
+				if byte != 0x0E:            
+					s = "Error! SOF = 0x%X, should be 0x0E" % byte
+					self.putg(begin, end,[15, [s]])
+					
+			elif i == 4:
+				id = int(''.join(str(d) for d in self.bits[8:20]), 2)
+				s = '%d (0x%X)' % (id, id)
+				(begin,_,_) = self.bit_groups[2]
+				(_,end,_) = self.bit_groups[4]
+				self.putg(begin, end, [1,  ['Identifier: %s' % s, 'ID: %s' % s, 'ID']])	
+			elif i == 5:
+				begin=ss
+				self.putg(begin,begin,[2, ['EXT']])
 
-	def is_stuff_bit(self):
-		bit = len(self.rawbits) -1
-		if bit <= 10 :
-			return False
-		
-		elif (bit % 5) == 4:
-			return True
-		
-		return False
+				begin +=  int(self.bit_width)
+				self.putg(begin,begin,[3, ['RAK']])
+
+				begin +=  int(self.bit_width)
+				self.putg(begin,begin,[4, ['R/W']])
+
+				begin +=  int (self.bit_width)
+				self.putg(begin,begin,[5, ['RTR']])
+
+			elif i >= 7 and i < (groups - 4) and i %2 == 1:
+				index = int((i - 7 ) / 2)
+				self.putg(begin, end, [6, ['Data[%d]=0x%02X' % (index,byte), 'D[%d]=0x%02x' % (index,byte), 'D']])
+			
+			elif i == groups - 3:
+				(begin,_,_) = self.bit_groups[-4]
+				(_,end,_) = self.bit_groups[-1]
+				end -= 2*int(self.bit_width)
+				crc = int(''.join(str(d) for d in self.bits[-16:-1]), 2)
+				self.putg(begin, end, [7, ['CRC=0x%04X' % crc, 'C=0x%04x' % crc, 'C']])
+
+			elif i == groups - 1:
+				end = es
+				begin = end - int(self.bit_width)
+				self.putg(begin,end,[8, ['EOD']])
+				self.done = True
+
+		return True				
 
 	def handle_bit(self, van_rx):
 		self.rawbits.append(van_rx)
-		bitnum = len(self.rawbits) - 1
 
-		if self.is_stuff_bit():
-			self.putx([12, [str(van_rx)]])
-		else:
-			self.putx([11, [str(van_rx)]])
-			self.bits.append(van_rx)
-
-		if bitnum == 0:
-			self.ss_block = self.samplenum
-			  
-		elif bitnum == 9:
-			self.putb([0, ['Start of frame', 'SOF', 'S']])
-			sof = int(''.join(str(d) for d in self.bits[0:10]), 2)
-			self.bits.clear()
-			if sof != 0x3D:            
-				s = "Error! SOF = 0x%X, should be 0x3D" % sof
-				self.putb([13, [s]])
-
-		elif bitnum == 10:
-			self.ss_block = self.samplenum
-
-		elif bitnum == 24:
-			self.id = int(''.join(str(d) for d in self.bits[0:]), 2)
-			s = '%d (0x%X)' % (self.id, self.id),
-			self.putb([1, ['Identifier: %s' % s, 'ID: %s' % s, 'ID']])
-			self.bits.clear()
-
-		elif bitnum == 25:
-			self.putx([2, ['EXT']])
-
-		elif bitnum == 26:
-			self.putx([3, ['RAK']])
-
-		elif bitnum == 27:
-			self.putx([4, ['R/W']])
-
-		elif bitnum == 28:
-			self.putx([5, ['RTR']])
-			self.bits.clear()
+		bitnum = len(self.rawbits) -1
 		
-		elif bitnum == self.last_databit:
-			self.ss_block = self.samplenum
-			
-		elif bitnum == self.last_databit + 9:
-			
-			# Recodrd data position
-			self.data_blocks.append((self.ss_block, self.samplenum))
-			
-			byte = int(''.join(str(d) for d in self.bits), 2) # & 0xFF
-			self.bits.clear()
 
-			raw = int(''.join(str(d) for d in self.rawbits[-8:]), 2)
 
-			if (raw & 0x03) > 0:
-				self.ss_crc_block = self.ss_block
-				self.last_databit += 10
-				self.data.append(byte)
-				if len(self.data) > 1:
-					self.putx([13, ['Data filed too long!']])
-			else: # meet EOD
-				
-				# Mark Data
-				b = self.data.pop()
-				crc = (b << 7) + (byte >> 1 )
-				self.crc = crc
-				self.ss_block = self.ss_crc_block
-				for i in range(len(self.data)):
-					byte = self.data[i]
-					(ss,es) = self.data_blocks[i]
-					self.putg(ss, es, [6, ['Data[%d]=0x%02X' % (i,byte), 'D[%d]=0x%02x' % (i,byte), 'D']])
-					ss = es
+		if self.done:
+					
+			groups = len(self.bit_groups) 
+			if bitnum == groups * 5:
+				self.putx([11, [str(van_rx)]])
+				if van_rx != 1:
+					self.putx([15, ['ACK delimitermust be a recessive bit']])
+			elif bitnum == groups*5 + 1:
+				self.putx([13, [str(van_rx)]])
+				(_,es,_) = self.bit_groups[-1]
+				begin = es + int(self.bit_width)
+				end = begin + int(self.bit_width)
+				self.putg(begin,end,[9, ['ACK']])
+			elif bitnum == groups*5 + 2:
+				self.putx([14, [str(van_rx)]])
+				self.ss_block = self.samplenum
+			elif bitnum == groups*5 + 3:
+				self.putx([14, [str(van_rx)]])
+			elif bitnum == groups*5 + 4:
+				self.putx([14, [str(van_rx)]])
+				self.putg(self.ss_block, self.samplenum,[10, ['EOF']])
+				if van_rx != 1:
+					self.putg(self.ss_block, self.samplenum,[15, ['End of frame (EOF) must be a recessive bit']])						
+				self.reset_variables()
+				return True			
+		else:
+			stuff_bit = bitnum % 5 == 4
 
-				# Mark CRC
-				ss = self.ss_crc_block
-				es = self.samplenum - 2*int(self.bit_width)
-				self.putg(ss, es, [7, ['CRC=0x%04X' % crc, 'C=0x%04x' % crc, 'C']])
-				
-				# Mark EOD
-				ss = self.samplenum - int(self.bit_width)
-				es = self.samplenum
-				self.putg(ss,es,[8, ['EOD']])
-				self.ack_bit = self.last_databit + 10
-			
-		elif bitnum == self.ack_bit:
-			self.ss_block = self.samplenum
-			if van_rx != 1:
-				self.putx([13, ['ACK delimitermust be a recessive bit']])
-
-		elif bitnum == self.ack_bit + 1:
-			self.putb([9, ['ACK']])
-
-		elif bitnum == self.ack_bit + 2:
-			self.putx([10, ['EOF']])
-			if van_rx != 1:
-				self.putx([13, ['End of frame (EOF) must be a recessive bit']])
-
-			self.reset_variables()
-			return True
+			if stuff_bit:
+				self.putx([12, [str(van_rx)]])
+			else:
+				self.putx([11, [str(van_rx)]])
+				self.bits.append(van_rx
+					 )			
+			if bitnum % 5 == 0:
+				self.ss_block = self.samplenum
+			elif stuff_bit:
+				bits = self.bits[-4:]
+				self.bit_groups.append((self.ss_block, self.samplenum, bits))
+				raw = int(''.join(str(d) for d in self.rawbits[-5:]), 2)
+				if raw & 3 == 0:
+					self.decode_frame()
 
 		self.curbit += 1
 
@@ -255,7 +253,6 @@ class Decoder(srd.Decoder):
 			if self.state == 'IDLE':
 				# Wait for a dominant state (logic 0) on the bus.
 				(van_rx,) = self.wait({0: 'l'})
-				#self.sof = self.samplenum
 				self.dom_edge_seen(force = True)
 				self.state = 'GET_BITS'
 			elif self.state == 'GET_BITS':
