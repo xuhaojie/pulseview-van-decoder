@@ -182,7 +182,7 @@ class Decoder(srd.Decoder):
 				(begin,_,_) = self.bit_groups[-4]
 				(_,end,_) = self.bit_groups[-1]
 				end -= 2*int(self.bit_width)
-				crc = int(''.join(str(d) for d in self.bits[-23:-1]), 2)
+				crc = int(''.join(str(d) for d in self.bits[-16:-1]), 2)
 				self.putg(begin, end, [7, ['CRC=0x%04X' % crc, 'C=0x%04x' % crc, 'C']])
 
 			elif i == groups - 1:
